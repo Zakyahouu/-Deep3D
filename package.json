@@ -1,0 +1,65 @@
+{
+  "name": "presentation-3d-viewer",
+  "version": "1.0.0",
+  "description": "A self-contained, offline-first 3D model viewer with local library system",
+  "main": "public/electron.js",
+  "homepage": "./",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "electron": "electron .",
+    "electron-dev": "concurrently \"npm run dev\" \"npm run electron-wait\" --kill-others",
+    "electron-wait": "wait-on http://localhost:5173 http://localhost:5174 http://localhost:5175 && npx cross-env ELECTRON_IS_DEV=1 electron .",
+    "electron-pack": "npm run build && electron-builder",
+    "preelectron-pack": "npm run build"
+  },
+  "keywords": [
+    "3d",
+    "viewer",
+    "electron",
+    "react",
+    "three.js"
+  ],
+  "author": "P3DV Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^28.1.0",
+    "electron-builder": "^24.9.1",
+    "vite": "^5.0.8",
+    "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.88.13",
+    "@react-three/fiber": "^8.15.11",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "sqlite3": "^5.1.6",
+    "three": "^0.158.0"
+  },
+  "build": {
+    "appId": "com.p3dv.app",
+    "productName": "Presentation 3D Viewer",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "build/**/*",
+      "public/electron.js",
+      "node_modules/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.graphics-design"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
