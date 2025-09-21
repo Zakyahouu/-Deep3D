@@ -20,6 +20,8 @@ protocol.registerSchemesAsPrivileged([
 const Database = require('sqlite3').Database;
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
+const { machineId } = require('node-machine-id');
 
 // Create database instance
 let db;
@@ -151,11 +153,12 @@ function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js')
-    },
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+          preload: path.join(__dirname, 'preload.js'),
+          devTools: true // Re-enable dev tools for debugging
+        },
     icon: path.join(__dirname, 'icon.png'),
     titleBarStyle: 'default',
     show: false
@@ -202,15 +205,15 @@ app.whenReady().then(() => {
     console.log('Protocol handler - Requested URL:', request.url);
     
     // Extract the encoded path from URL like p3dv-models://file/C%3A%5CUsers%5C...
-    const urlParts = request.url.split('/');
-    if (urlParts.length < 4 || urlParts[2] !== '' || urlParts[3] !== 'file') {
-      console.log('Protocol handler - Invalid URL format');
+    const match = request.url.match(/^p3dv-models:\/\/file\/(.+)$/);
+    if (!match) {
+      console.log('Protocol handler - Invalid URL format, expected p3dv-models://file/...');
       callback({ error: -6 }); // ERR_FILE_NOT_FOUND
       return;
     }
     
     // Decode the file path
-    const encodedPath = urlParts.slice(4).join('/');
+    const encodedPath = match[1];
     const filePath = decodeURIComponent(encodedPath);
     
     console.log('Protocol handler - Encoded path:', encodedPath);
@@ -375,6 +378,311 @@ ipcMain.handle('fs:get-model-path', async (event, modelId) => {
 
 ipcMain.handle('fs:get-thumbnail-path', async (event, modelId) => {
   return fileSystemManager.getThumbnailPath(modelId);
+});
+
+// Enhanced CRUD operations
+ipcMain.handle('db:update-model', async (event, modelId, modelData) => {
+  try {
+    const { name, description, category_id, metadata } = modelData;
+    
+    const stmt = db.prepare(`
+      UPDATE models 
+      SET name = ?, description = ?, category_id = ?, metadata = ?, updated_at = ?
+      WHERE id = ?
+    `);
+    
+    const result = stmt.run(
+      name,
+      description,
+      category_id || null,
+      JSON.stringify(metadata || {}),
+      new Date().toISOString(),
+      modelId
+    );
+    
+    return { success: true, changes: result.changes };
+  } catch (error) {
+    console.error('Error updating model:', error);
+    throw new Error('Failed to update model');
+  }
+});
+
+ipcMain.handle('db:delete-model', async (event, modelId) => {
+  try {
+    // Get model info first to delete associated files
+    const model = db.prepare('SELECT * FROM models WHERE id = ?').get(modelId);
+    if (!model) {
+      throw new Error('Model not found');
+    }
+
+    // Delete the model file
+    if (model.file_path && fs.existsSync(model.file_path)) {
+      await fs.promises.unlink(model.file_path);
+    }
+
+    // Delete thumbnail if exists
+    if (model.thumbnail_path && fs.existsSync(model.thumbnail_path)) {
+      await fs.promises.unlink(model.thumbnail_path);
+    }
+
+    // Delete from database
+    const stmt = db.prepare('DELETE FROM models WHERE id = ?');
+    const result = stmt.run(modelId);
+    
+    return { success: true, changes: result.changes };
+  } catch (error) {
+    console.error('Error deleting model:', error);
+    throw new Error('Failed to delete model');
+  }
+});
+
+ipcMain.handle('db:bulk-delete-models', async (event, modelIds) => {
+  try {
+    let totalDeleted = 0;
+    
+    for (const modelId of modelIds) {
+      // Get model info first
+      const model = db.prepare('SELECT * FROM models WHERE id = ?').get(modelId);
+      if (model) {
+        // Delete files
+        if (model.file_path && fs.existsSync(model.file_path)) {
+          await fs.promises.unlink(model.file_path);
+        }
+        if (model.thumbnail_path && fs.existsSync(model.thumbnail_path)) {
+          await fs.promises.unlink(model.thumbnail_path);
+        }
+        
+        // Delete from database
+        const stmt = db.prepare('DELETE FROM models WHERE id = ?');
+        const result = stmt.run(modelId);
+        totalDeleted += result.changes;
+      }
+    }
+    
+    return { success: true, deleted: totalDeleted };
+  } catch (error) {
+    console.error('Error bulk deleting models:', error);
+    throw new Error('Failed to delete models');
+  }
+});
+
+ipcMain.handle('db:bulk-move-models', async (event, modelIds, categoryId) => {
+  try {
+    const stmt = db.prepare('UPDATE models SET category_id = ?, updated_at = ? WHERE id = ?');
+    const updateTime = new Date().toISOString();
+    let totalUpdated = 0;
+    
+    for (const modelId of modelIds) {
+      const result = stmt.run(categoryId || null, updateTime, modelId);
+      totalUpdated += result.changes;
+    }
+    
+    return { success: true, updated: totalUpdated };
+  } catch (error) {
+    console.error('Error bulk moving models:', error);
+    throw new Error('Failed to move models');
+  }
+});
+
+ipcMain.handle('db:bulk-tag-models', async (event, modelIds, tagsToAdd, tagsToRemove) => {
+  try {
+    let totalUpdated = 0;
+    
+    for (const modelId of modelIds) {
+      // Get current tags
+      const model = db.prepare('SELECT tags FROM models WHERE id = ?').get(modelId);
+      if (model) {
+        let currentTags = [];
+        try {
+          currentTags = model.tags ? JSON.parse(model.tags) : [];
+        } catch (e) {
+          currentTags = [];
+        }
+        
+        // Add new tags
+        tagsToAdd.forEach(tagId => {
+          if (!currentTags.includes(tagId)) {
+            currentTags.push(tagId);
+          }
+        });
+        
+        // Remove tags
+        tagsToRemove.forEach(tagId => {
+          const index = currentTags.indexOf(tagId);
+          if (index > -1) {
+            currentTags.splice(index, 1);
+          }
+        });
+        
+        // Update model
+        const stmt = db.prepare('UPDATE models SET tags = ?, updated_at = ? WHERE id = ?');
+        const result = stmt.run(
+          JSON.stringify(currentTags),
+          new Date().toISOString(),
+          modelId
+        );
+        totalUpdated += result.changes;
+      }
+    }
+    
+    return { success: true, updated: totalUpdated };
+  } catch (error) {
+    console.error('Error bulk tagging models:', error);
+    throw new Error('Failed to update model tags');
+  }
+});
+
+ipcMain.handle('db:export-models', async (event, modelIds, format) => {
+  try {
+    const exportDir = path.join(app.getPath('userData'), 'exports');
+    if (!fs.existsSync(exportDir)) {
+      fs.mkdirSync(exportDir, { recursive: true });
+    }
+    
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const exportPath = path.join(exportDir, `p3dv-export-${timestamp}`);
+    
+    if (format === 'collection') {
+      // Create collection with metadata and models
+      fs.mkdirSync(exportPath, { recursive: true });
+      fs.mkdirSync(path.join(exportPath, 'models'), { recursive: true });
+      
+      const exportData = {
+        format: 'P3DV Collection',
+        version: '1.0.0',
+        exported_at: new Date().toISOString(),
+        models: []
+      };
+      
+      for (const modelId of modelIds) {
+        const model = db.prepare(`
+          SELECT m.*, c.name as category_name, c.color as category_color
+          FROM models m
+          LEFT JOIN categories c ON m.category_id = c.id
+          WHERE m.id = ?
+        `).get(modelId);
+        
+        if (model && model.file_path && fs.existsSync(model.file_path)) {
+          const fileName = `model_${model.id}.glb`;
+          const destPath = path.join(exportPath, 'models', fileName);
+          await fs.promises.copyFile(model.file_path, destPath);
+          
+          exportData.models.push({
+            ...model,
+            file_path: `models/${fileName}`,
+            metadata: model.metadata ? JSON.parse(model.metadata) : {},
+            tags: model.tags ? JSON.parse(model.tags) : []
+          });
+        }
+      }
+      
+      await fs.promises.writeFile(
+        path.join(exportPath, 'collection.json'),
+        JSON.stringify(exportData, null, 2)
+      );
+      
+      return { success: true, path: exportPath, format: 'collection' };
+    } else if (format === 'metadata') {
+      // Export metadata only
+      const exportData = { models: [] };
+      
+      for (const modelId of modelIds) {
+        const model = db.prepare(`
+          SELECT m.*, c.name as category_name, c.color as category_color
+          FROM models m
+          LEFT JOIN categories c ON m.category_id = c.id
+          WHERE m.id = ?
+        `).get(modelId);
+        
+        if (model) {
+          exportData.models.push({
+            ...model,
+            metadata: model.metadata ? JSON.parse(model.metadata) : {},
+            tags: model.tags ? JSON.parse(model.tags) : []
+          });
+        }
+      }
+      
+      const exportFile = exportPath + '.json';
+      await fs.promises.writeFile(exportFile, JSON.stringify(exportData, null, 2));
+      
+      return { success: true, path: exportFile, format: 'metadata' };
+    }
+    
+    return { success: false, error: 'Unsupported export format' };
+  } catch (error) {
+    console.error('Error exporting models:', error);
+    throw new Error('Failed to export models');
+  }
+});
+
+// License data handlers
+ipcMain.handle('license:save', async (event, licenseData) => {
+  try {
+    const licenseFile = path.join(app.getPath('userData'), 'license.json');
+    await fs.promises.writeFile(licenseFile, JSON.stringify(licenseData, null, 2));
+    return { success: true };
+  } catch (error) {
+    console.error('Error saving license data:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('license:load', async () => {
+  try {
+    const licenseFile = path.join(app.getPath('userData'), 'license.json');
+    const data = await fs.promises.readFile(licenseFile, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    // File doesn't exist or is corrupted
+    return null;
+  }
+});
+
+ipcMain.handle('license:clear', async () => {
+  try {
+    const licenseFile = path.join(app.getPath('userData'), 'license.json');
+    await fs.promises.unlink(licenseFile);
+    return { success: true };
+  } catch (error) {
+    // File doesn't exist, that's fine
+    return { success: true };
+  }
+});
+
+// Hardware fingerprinting and crypto operations
+const SECRET_KEY = 'P3DV_SECRET_KEY_2024'; // In production, use environment variable
+
+ipcMain.handle('license:generate-fingerprint', async () => {
+  try {
+    const machineID = await machineId();
+    const platform = process.platform;
+    const arch = process.arch;
+    
+    const fingerprint = crypto
+      .createHash('sha256')
+      .update(`${machineID}-${platform}-${arch}`)
+      .digest('hex');
+    
+    return fingerprint;
+  } catch (error) {
+    console.error('Error generating hardware fingerprint:', error);
+    throw new Error('Failed to generate hardware fingerprint');
+  }
+});
+
+ipcMain.handle('license:sign-payload', async (event, payload) => {
+  try {
+    const signature = crypto
+      .createHmac('sha256', SECRET_KEY)
+      .update(payload)
+      .digest('hex');
+    
+    return signature;
+  } catch (error) {
+    console.error('Error signing payload:', error);
+    throw new Error('Failed to sign payload');
+  }
 });
 
 // Deep linking setup (Phase 3)

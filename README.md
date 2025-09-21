@@ -138,3 +138,4 @@ This will create installers in the `dist-electron` directory for both Windows an
 
 MIT License - see LICENSE file for details.
 
+

@@ -8,6 +8,8 @@ function ModelViewer({ modelPath }) {
   const modelRef = useRef();
 
   useEffect(() => {
+    let isCancelled = false;
+    
     // Reset state when modelPath changes
     setScene(null);
     setError(null);
@@ -45,6 +47,8 @@ function ModelViewer({ modelPath }) {
           );
         });
 
+        if (isCancelled) return;
+
         if (gltf && gltf.scene) {
           // Center and scale the model
           const box = new THREE.Box3().setFromObject(gltf.scene);
@@ -61,17 +65,25 @@ function ModelViewer({ modelPath }) {
             gltf.scene.position.sub(center.multiplyScalar(scale));
           }
           
-          setScene(gltf.scene);
-          setLoading(false);
+          if (!isCancelled) {
+            setScene(gltf.scene);
+            setLoading(false);
+          }
         }
       } catch (err) {
-        console.error('Error loading 3D model:', err);
-        setError(err);
-        setLoading(false);
+        if (!isCancelled) {
+          console.error('Error loading 3D model:', err);
+          setError(err);
+          setLoading(false);
+        }
       }
     };
 
     loadModel();
+    
+    return () => {
+      isCancelled = true;
+    };
   }, [modelPath]);
 
   // Error state

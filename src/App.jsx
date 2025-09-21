@@ -1,19 +1,37 @@
-// App.js - Main App Component
+// App.js - Main App Component with New Multi-Panel Layout
 import React, { useState, useEffect } from 'react';
-import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Environment, Grid } from '@react-three/drei';
-import ModelViewer from './components/ModelViewer';
-import ErrorBoundary from './components/ErrorBoundary';
-import LibraryPanel from './components/LibraryPanel';
-import Header from './components/Header';
+import SimpleLayout from './components/SimpleLayout';
+import SimpleLibraryPanel from './components/SimpleLibraryPanel';
+import SimpleViewerPanel from './components/SimpleViewerPanel';
+import SimpleInfoPanel from './components/SimpleInfoPanel';
+import SimpleMenu from './components/SimpleMenu';
+import ModelDetailsDialog from './components/ModelDetailsDialog';
+import AdvancedSearch from './components/AdvancedSearch';
+import BulkOperations from './components/BulkOperations';
+import SettingsDialog from './components/SettingsDialog';
+import AddModelDialog from './components/AddModelDialog';
+import errorHandler from './utils/errorHandler';
 
 function App() {
+  // Core state
   const [selectedModel, setSelectedModel] = useState(null);
   const [models, setModels] = useState([]);
   const [categories, setCategories] = useState([]);
   const [tags, setTags] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  
+  // UI state
+  const [modelDetailsOpen, setModelDetailsOpen] = useState(false);
+  const [selectedModelForDetails, setSelectedModelForDetails] = useState(null);
+  const [advancedSearchOpen, setAdvancedSearchOpen] = useState(false);
+  const [bulkOperationsOpen, setBulkOperationsOpen] = useState(false);
+  const [selectedModelsForBulk, setSelectedModelsForBulk] = useState([]);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [filteredModels, setFilteredModels] = useState([]);
+  const [searchActive, setSearchActive] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [addModelOpen, setAddModelOpen] = useState(false);
 
   // Load data on component mount
   useEffect(() => {
@@ -24,19 +42,20 @@ function App() {
     try {
       setLoading(true);
       
-      if (!window.electronAPI) {
+      if (!errorHandler.isElectronAPIReady()) {
         throw new Error('Electron API not available');
       }
       
       const [modelsData, categoriesData, tagsData] = await Promise.all([
-        window.electronAPI.getModels(),
-        window.electronAPI.getCategories(),
-        window.electronAPI.getTags()
+        errorHandler.safeElectronCall('getModels'),
+        errorHandler.safeElectronCall('getCategories'),
+        errorHandler.safeElectronCall('getTags')
       ]);
       
-      setModels(modelsData || []);
-      setCategories(categoriesData || []);
-      setTags(tagsData || []);
+      // Ensure data is always an array with validation
+      setModels(errorHandler.safeArrayOperation(modelsData, (arr) => arr, []));
+      setCategories(errorHandler.safeArrayOperation(categoriesData, (arr) => arr, []));
+      setTags(errorHandler.safeArrayOperation(tagsData, (arr) => arr, []));
     } catch (error) {
       console.error('Error loading data:', error);
       alert(`Error loading data: ${error.message}`);
@@ -46,21 +65,26 @@ function App() {
   };
 
   const handleModelSelect = (model) => {
-    setSelectedModel(model);
+    if (model && typeof model === 'object' && model.id) {
+      setSelectedModel(model);
+    } else {
+      console.warn('Invalid model selected:', model);
+    }
   };
 
   const handleModelAdd = async () => {
-    try {
-      await loadData(); // Reload all data after model is added
-    } catch (error) {
-      console.error('Error reloading data after model add:', error);
-    }
+    setAddModelOpen(true);
+  };
+
+  const handleModelAdded = async () => {
+    await loadData();
+    setAddModelOpen(false);
   };
 
   const handleCategoryAdd = async (categoryData) => {
     try {
-      await window.electronAPI.addCategory(categoryData);
-      await loadData(); // Reload all data
+      await errorHandler.safeElectronCall('addCategory', categoryData);
+      await loadData();
     } catch (error) {
       console.error('Error adding category:', error);
     }
@@ -68,93 +92,272 @@ function App() {
 
   const handleTagAdd = async (tagData) => {
     try {
-      await window.electronAPI.addTag(tagData);
-      await loadData(); // Reload all data
+      await errorHandler.safeElectronCall('addTag', tagData);
+      await loadData();
     } catch (error) {
       console.error('Error adding tag:', error);
     }
   };
 
+  // Enhanced CRUD handlers
+  const handleModelEdit = (model) => {
+    setSelectedModelForDetails(model);
+    setModelDetailsOpen(true);
+  };
+
+  const handleModelSave = async (updatedModel) => {
+    try {
+      if (!errorHandler.isElectronAPIReady()) {
+        throw new Error('Electron API not available');
+      }
+      if (!updatedModel || !updatedModel.id) {
+        throw new Error('Invalid model data');
+      }
+      await errorHandler.safeElectronCall('updateModel', updatedModel.id, updatedModel);
+      await loadData();
+      console.log('Model updated successfully');
+    } catch (error) {
+      console.error('Error updating model:', error);
+      throw error;
+    }
+  };
+
+  const handleModelDelete = async (modelId) => {
+    try {
+      if (!errorHandler.isElectronAPIReady()) {
+        throw new Error('Electron API not available');
+      }
+      if (!modelId) {
+        throw new Error('Invalid model ID');
+      }
+      await errorHandler.safeElectronCall('deleteModel', modelId);
+      await loadData();
+      if (selectedModel?.id === modelId) {
+        setSelectedModel(null);
+      }
+      console.log('Model deleted successfully');
+    } catch (error) {
+      console.error('Error deleting model:', error);
+      throw error;
+    }
+  };
+
+  const handleAdvancedSearch = (results, criteria) => {
+    setFilteredModels(results);
+    setSearchActive(true);
+    console.log('Search applied:', criteria, 'Results:', results.length);
+  };
+
+  const clearSearch = () => {
+    setFilteredModels([]);
+    setSearchActive(false);
+    setSearchQuery('');
+  };
+
+  const toggleSelectionMode = () => {
+    setSelectionMode(!selectionMode);
+    if (selectionMode) {
+      setSelectedModelsForBulk([]);
+    }
+  };
+
+  const handleSelectionChange = (selectedModels) => {
+    setSelectedModelsForBulk(selectedModels);
+  };
+
+  const handleBulkOperations = (selectedModels) => {
+    setSelectedModelsForBulk(selectedModels);
+    setBulkOperationsOpen(true);
+  };
+
+  const handleBulkDelete = async (modelIds) => {
+    try {
+      if (!errorHandler.isElectronAPIReady()) {
+        throw new Error('Electron API not available');
+      }
+      if (!Array.isArray(modelIds) || modelIds.length === 0) {
+        throw new Error('No models selected for deletion');
+      }
+      await errorHandler.safeElectronCall('bulkDeleteModels', modelIds);
+      await loadData();
+      setSelectionMode(false);
+      setSelectedModelsForBulk([]);
+      console.log(`${modelIds.length} models deleted successfully`);
+    } catch (error) {
+      console.error('Error bulk deleting models:', error);
+      throw error;
+    }
+  };
+
+  const handleBulkMove = async (modelIds, categoryId) => {
+    try {
+      await errorHandler.safeElectronCall('bulkMoveModels', modelIds, categoryId);
+      await loadData();
+      setSelectionMode(false);
+      setSelectedModelsForBulk([]);
+      console.log(`${modelIds.length} models moved successfully`);
+    } catch (error) {
+      console.error('Error bulk moving models:', error);
+      throw error;
+    }
+  };
+
+  const handleBulkTag = async (modelIds, tagsToAdd, tagsToRemove) => {
+    try {
+      await errorHandler.safeElectronCall('bulkTagModels', modelIds, tagsToAdd, tagsToRemove);
+      await loadData();
+      setSelectionMode(false);
+      setSelectedModelsForBulk([]);
+      console.log(`${modelIds.length} models tagged successfully`);
+    } catch (error) {
+      console.error('Error bulk tagging models:', error);
+      throw error;
+    }
+  };
+
+  const handleBulkExport = async (modelIds, format) => {
+    try {
+      await errorHandler.safeElectronCall('exportModels', modelIds, format);
+      console.log(`${modelIds.length} models exported successfully`);
+    } catch (error) {
+      console.error('Error exporting models:', error);
+      throw error;
+    }
+  };
+
+  const handleSettingsSave = (settings) => {
+    setSettingsOpen(false);
+    console.log('Settings saved:', settings);
+  };
+
+  const handleExportAll = async () => {
+    try {
+      await errorHandler.safeElectronCall('exportModels', models.map(m => m.id), 'collection');
+      console.log('All models exported successfully');
+    } catch (error) {
+      console.error('Error exporting all models:', error);
+    }
+  };
+
+  const handleImportModels = () => {
+    // TODO: Implement import functionality
+    console.log('Import models clicked');
+  };
+
+  const handleSearch = (query) => {
+    setSearchQuery(query);
+    if (query.trim() === '') {
+      clearSearch();
+    }
+  };
+
   if (loading) {
     return (
-      <div className="w-full h-screen bg-gray-50 flex flex-col items-center justify-center">
-        <div className="w-8 h-8 border-2 border-gray-300 border-t-gray-700 rounded-full animate-spin mb-4"></div>
-        <p className="text-gray-600 font-medium">Loading Presentation 3D Viewer...</p>
+      <div className="h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">Loading Presentation 3D Viewer</h2>
+          <p className="text-gray-600 font-medium">Initializing your 3D model library...</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="w-full h-screen bg-gray-50 flex flex-col overflow-hidden">
-      <Header 
-        onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
-        sidebarOpen={sidebarOpen}
+    <div className="h-screen overflow-hidden">
+      <SimpleLayout
+        leftPanel={
+          <SimpleLibraryPanel
+            models={searchActive ? filteredModels : models}
+            categories={categories}
+            tags={tags}
+            selectedModel={selectedModel}
+            onModelSelect={handleModelSelect}
+            onModelAdd={handleModelAdd}
+          />
+        }
+        centerPanel={
+          <SimpleViewerPanel
+            selectedModel={selectedModel}
+            onModelEdit={handleModelEdit}
+            onModelDelete={handleModelDelete}
+          />
+        }
+        rightPanel={
+          <SimpleInfoPanel
+            selectedModel={selectedModel}
+            onModelEdit={handleModelEdit}
+            onModelDelete={handleModelDelete}
+            categories={categories}
+            tags={tags}
+          />
+        }
+        topMenu={
+          <SimpleMenu
+            onAdvancedSearch={() => setAdvancedSearchOpen(true)}
+            onBulkOperations={() => handleBulkOperations(selectedModelsForBulk)}
+            onSettings={() => setSettingsOpen(true)}
+            onExportAll={handleExportAll}
+            onImportModels={handleImportModels}
+            onManageCategories={() => console.log('Manage categories')}
+            onManageTags={() => console.log('Manage tags')}
+            selectedCount={selectedModelsForBulk.length}
+          />
+        }
       />
-      
-      <div className="flex flex-1 overflow-hidden bg-white rounded-t-lg mt-2 mx-2 border border-gray-200">
-        <LibraryPanel
-          isOpen={sidebarOpen}
-          models={models}
+
+      {/* Dialogs */}
+      <AddModelDialog
+        isOpen={addModelOpen}
+        onClose={() => setAddModelOpen(false)}
+        onModelAdd={handleModelAdded}
+        categories={categories}
+        tags={tags}
+      />
+
+      <ModelDetailsDialog
+        isOpen={modelDetailsOpen}
+        onClose={() => {
+          setModelDetailsOpen(false);
+          setSelectedModelForDetails(null);
+        }}
+        model={selectedModelForDetails}
+        categories={categories}
+        tags={tags}
+        onSave={handleModelSave}
+        onDelete={handleModelDelete}
+      />
+
+      <AdvancedSearch
+        isOpen={advancedSearchOpen}
+        onClose={() => setAdvancedSearchOpen(false)}
+        onSearch={handleAdvancedSearch}
+        categories={categories}
+        tags={tags}
+        models={models}
+      />
+
+      {bulkOperationsOpen && (
+        <BulkOperations
+          selectedModels={selectedModelsForBulk}
+          onBulkDelete={handleBulkDelete}
+          onBulkMove={handleBulkMove}
+          onBulkExport={handleBulkExport}
+          onBulkTag={handleBulkTag}
           categories={categories}
           tags={tags}
-          selectedModel={selectedModel}
-          onModelSelect={handleModelSelect}
-          onModelAdd={handleModelAdd}
-          onCategoryAdd={handleCategoryAdd}
-          onTagAdd={handleTagAdd}
+          onClose={() => {
+            setBulkOperationsOpen(false);
+            setSelectedModelsForBulk([]);
+          }}
         />
-        
-        <div className="flex-1 relative bg-white rounded-r-lg overflow-hidden">
-          <Canvas
-            camera={{ position: [5, 5, 5], fov: 50 }}
-            className="w-full h-full"
-          >
-            <ambientLight intensity={0.5} />
-            <directionalLight position={[10, 10, 5]} intensity={1} />
-            <Environment preset="studio" />
-            <Grid 
-              position={[0, -1, 0]} 
-              args={[10, 10]} 
-              cellSize={1} 
-              cellThickness={0.5} 
-              cellColor="#f3f4f6"
-              sectionSize={5}
-              sectionThickness={1}
-              sectionColor="#e5e7eb"
-            />
-            
-            {selectedModel && selectedModel.file_path ? (
-              <ErrorBoundary>
-                <ModelViewer modelPath={selectedModel.file_path} />
-              </ErrorBoundary>
-            ) : (
-              <mesh>
-                <boxGeometry args={[1, 1, 1]} />
-                <meshStandardMaterial color="#6b7280" />
-              </mesh>
-            )}
-            
-            <OrbitControls 
-              enablePan={true}
-              enableZoom={true}
-              enableRotate={true}
-              minDistance={2}
-              maxDistance={20}
-            />
-          </Canvas>
-          
-          {!selectedModel && (
-            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center bg-white bg-opacity-95 p-8 rounded-lg border border-gray-200 max-w-md">
-              <h2 className="text-xl font-medium text-gray-900 mb-2">
-                Welcome to Presentation 3D Viewer
-              </h2>
-              <p className="text-gray-600">
-                Select a model from the library to view it in 3D
-              </p>
-            </div>
-          )}
-        </div>
-      </div>
+      )}
+
+      <SettingsDialog
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onSave={handleSettingsSave}
+      />
     </div>
   );
 }

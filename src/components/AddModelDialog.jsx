@@ -1,7 +1,7 @@
 // AddModelDialog.js - Add Model Dialog Component
 import React, { useState } from 'react';
 
-function AddModelDialog({ categories, tags, onClose, onModelAdd }) {
+function AddModelDialog({ isOpen, categories, tags, onClose, onModelAdd }) {
   const [formData, setFormData] = useState({
     name: '',
     filePath: '',
@@ -9,6 +9,24 @@ function AddModelDialog({ categories, tags, onClose, onModelAdd }) {
     selectedTags: []
   });
   const [loading, setLoading] = useState(false);
+
+  // Reset form when dialog opens
+  React.useEffect(() => {
+    if (isOpen) {
+      setFormData({
+        name: '',
+        filePath: '',
+        categoryId: '',
+        selectedTags: []
+      });
+      setLoading(false);
+    }
+  }, [isOpen]);
+
+  // Don't render if not open
+  if (!isOpen) {
+    return null;
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault();
